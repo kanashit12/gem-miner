@@ -1,0 +1,42 @@
+name: gem-mine
+on:
+  push:
+    branches: [main]
+    paths: ["gem/jobs/*.json"]
+permissions:
+  contents: write
+jobs:
+  mine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Build miner
+        run: gcc -O3 -march=native -pthread -o miner gem/miner.c
+      - name: Grind job files from this push
+        run: |
+          set -e
+          mkdir -p gem/results
+          for jf in $(git diff-tree --root --no-commit-id --name-only -r HEAD | grep '^gem/jobs/.*\.json$' || true); do
+            echo "== job: $jf"
+            seed=$(jq -r .seed "$jf"); wallet=$(jq -r .wallet "$jf"); target=$(jq -r .target "$jf")
+            epoch=$(jq -r .epoch "$jf"); want=$(jq -r .want "$jf"); start=$(jq -r .start "$jf")
+            budget=$(jq -r .budget "$jf"); job=$(jq -r .job "$jf")
+            out="gem/results/${wallet}-e${epoch}-j${job}.txt"
+            touch "$out"
+            timeout 1400 ./miner "$seed" "$wallet" "$target" "$want" 4 "$out" "$start" "$budget" || true
+            echo "--- $out:"; cat "$out"
+          done
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "gem-miner"
+          git config user.email "gem-miner@users.noreply.github.com"
+          git add gem/results/
+          if git diff --cached --quiet; then echo "no results to commit"; exit 0; fi
+          git commit -m "gem results $(date -u +%FT%TZ)"
+          for i in 1 2 3 4 5; do
+            git pull --rebase origin main && git push origin main && break || sleep 5
+          done
